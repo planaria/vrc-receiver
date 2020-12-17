@@ -192,9 +192,11 @@ namespace vrcrec
 			std::array<uint8_t, 12> signature = { 0x45, 0x23, 0x01, 0xff, 0xab, 0x89, 0x67, 0xff, 0x00, 0xef, 0xcd, 0xff };
 			std::array<uint8_t, 12> signature_rev = { 0x00, 0xef, 0xcd, 0xff, 0xab, 0x89, 0x67, 0xff, 0x45, 0x23, 0x01, 0xff };
 
-			std::vector<std::uint8_t> image_data;
+			std::vector<std::uint8_t> image_data_rgb;
+			std::vector<std::uint8_t> image_data_depth;
 			std::optional<std::uint32_t> image_id;
-			boost::dynamic_bitset<> image_filled;
+			boost::dynamic_bitset<> image_filled_rgb;
+			boost::dynamic_bitset<> image_filled_depth;
 			std::optional<std::uint32_t> last_image_size_x;
 			std::optional<std::uint32_t> last_image_size_y;
 			std::optional<std::uint32_t> last_screen_size_x;
@@ -314,10 +316,14 @@ namespace vrcrec
 							screen_size_y != last_screen_size_y)
 						{
 							image_id = data_id;
-							image_data.resize(image_size_x * image_size_y * 4);
-							std::fill(image_data.begin(), image_data.end(), static_cast<std::uint8_t>(0));
-							image_filled.resize(num_chunks);
-							image_filled.reset();
+							image_data_rgb.resize(image_size_x * image_size_y * 4);
+							image_data_depth.resize(image_size_x * image_size_y * 4);
+							std::fill(image_data_rgb.begin(), image_data_rgb.end(), static_cast<std::uint8_t>(0));
+							std::fill(image_data_depth.begin(), image_data_depth.end(), static_cast<std::uint8_t>(0));
+							image_filled_rgb.resize(num_chunks);
+							image_filled_rgb.reset();
+							image_filled_depth.resize(num_chunks);
+							image_filled_depth.reset();
 							last_image_size_x = image_size_x;
 							last_image_size_y = image_size_y;
 							last_screen_size_x = screen_size_x;
@@ -325,6 +331,10 @@ namespace vrcrec
 						}
 
 						auto data_index_mod = data_index % num_chunks;
+						auto depth = (data_index / num_chunks % 2) == 1;
+
+						auto& image_filled = depth ? image_filled_depth : image_filled_rgb;
+						auto& image_data = depth ? image_data_depth : image_data_rgb;
 
 						if (image_filled.test_set(data_index_mod))
 						{
@@ -332,13 +342,8 @@ namespace vrcrec
 						}
 
 						std::cout << "Found "
-							<< screen_size_x << ","
-							<< screen_size_y << ","
-							<< image_size_x << ","
-							<< image_size_y << ","
-							<< data_id << ","
-							<< data_index_mod << ","
-							<< image_filled.count() << "/" << image_filled.size()
+							<< "RGB: " << image_filled_rgb.count() << "/" << image_filled_rgb.size() << ","
+							<< "DEPTH: " << image_filled_depth.count() << "/" << image_filled_depth.size()
 							<< std::endl;
 
 						auto dst_offset = data_index_mod * body_size * 4;
@@ -359,33 +364,41 @@ namespace vrcrec
 							dst_offset += screen_size_x * 4;
 						}
 
-						if (image_filled.all())
+						if (image_filled_rgb.all() && image_filled_depth.all())
 						{
-							std::cout << "writing..." << std::endl;
-
-							auto pixels_begin = reinterpret_cast<boost::gil::bgra8_pixel_t*>(image_data.data());
-							auto pixels_end = pixels_begin + image_size_x * image_size_y;
-
-							for (auto p = pixels_begin; p != pixels_end; ++p)
+							auto write = [&](std::vector<std::uint8_t>& data, const std::string& filename)
 							{
-								(*p)[3] = 0xff;
-							}
+								auto pixels_begin = reinterpret_cast<boost::gil::bgra8_pixel_t*>(data.data());
+								auto pixels_end = pixels_begin + image_size_x * image_size_y;
 
-							auto v = boost::gil::interleaved_view(image_size_x, image_size_y, pixels_begin, image_size_x * 4);
+								for (auto p = pixels_begin; p != pixels_end; ++p)
+								{
+									(*p)[3] = 0xff;
+								}
+
+								auto v = boost::gil::interleaved_view(image_size_x, image_size_y, pixels_begin, image_size_x * 4);
+
+								auto temp_file = boost::filesystem::temp_directory_path() / boost::filesystem::unique_path();
+								boost::gil::write_view(temp_file.native(), v, boost::gil::png_tag());
+
+								boost::filesystem::rename(temp_file, filename);
+							};
 
 							auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
 
 							std::ostringstream os;
 							os << std::put_time(std::localtime(&now), "%Y_%m_%d_%H_%M_%S");
 							os << "_" << data_id;
-							os << ".png";
 
-							auto target_file = os.str();
+							auto base_filename = os.str();
+							auto filename_rgb = base_filename + "_rgb.png";
+							auto filename_depth = base_filename + "_depth.png";
 
-							auto temp_file = boost::filesystem::temp_directory_path() / boost::filesystem::unique_path();
-							boost::gil::write_view(temp_file.native(), v, boost::gil::png_tag());
+							std::cout << "writing rgb..." << std::endl;
+							write(image_data_rgb, filename_rgb);
 
-							boost::filesystem::rename(temp_file, target_file);
+							std::cout << "writing depth..." << std::endl;
+							write(image_data_depth, filename_depth);
 
 							std::cout << "completed" << std::endl;
 						}
