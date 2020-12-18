@@ -163,6 +163,32 @@ namespace vrcrec
 		return item;
 	}
 
+	struct header
+	{
+		std::uint32_t screen_size_x = 0;
+		std::uint32_t screen_size_y = 0;
+		std::uint32_t image_size_x = 0;
+		std::uint32_t image_size_y = 0;
+		std::uint32_t data_id = 0;
+		std::uint32_t data_index = 0;
+	};
+
+	bool operator ==(const header& lhs, const header& rhs)
+	{
+		return
+			lhs.screen_size_x == rhs.screen_size_x &&
+			lhs.screen_size_y == rhs.screen_size_y &&
+			lhs.image_size_x == rhs.image_size_x &&
+			lhs.image_size_y == rhs.image_size_y &&
+			lhs.data_id == rhs.data_id &&
+			lhs.data_index == rhs.data_index;
+	}
+
+	bool operator !=(const header& lhs, const header& rhs)
+	{
+		return !(lhs == rhs);
+	}
+
 	void run()
 	{
 		using namespace std::chrono_literals;
@@ -192,11 +218,11 @@ namespace vrcrec
 			std::array<uint8_t, 12> signature = { 0x45, 0x23, 0x01, 0xff, 0xab, 0x89, 0x67, 0xff, 0x00, 0xef, 0xcd, 0xff };
 			std::array<uint8_t, 12> signature_rev = { 0x00, 0xef, 0xcd, 0xff, 0xab, 0x89, 0x67, 0xff, 0x45, 0x23, 0x01, 0xff };
 
-			std::vector<std::uint8_t> image_data_rgb;
-			std::vector<std::uint8_t> image_data_depth;
+			constexpr std::uint32_t num_channels = 3;
+
 			std::optional<std::uint32_t> image_id;
-			boost::dynamic_bitset<> image_filled_rgb;
-			boost::dynamic_bitset<> image_filled_depth;
+			std::array<std::vector<std::uint8_t>, num_channels> images_data;
+			std::array<boost::dynamic_bitset<>, num_channels> images_filled;
 			std::optional<std::uint32_t> last_image_size_x;
 			std::optional<std::uint32_t> last_image_size_y;
 			std::optional<std::uint32_t> last_screen_size_x;
@@ -243,27 +269,34 @@ namespace vrcrec
 					if (it != row_end)
 					{
 						auto row_offset = it - row_begin;
-						auto p = row_begin + row_offset + signature.size();
 
-						auto read_uint32 = [&]()
+						auto read_header = [&](const std::uint8_t* p)
 						{
-							auto value =
-								static_cast<std::uint32_t>(p[0]) |
-								static_cast<std::uint32_t>(p[1]) << 8 |
-								static_cast<std::uint32_t>(p[2]) << 16;
+							auto read_uint32 = [&]()
+							{
+								auto value =
+									static_cast<std::uint32_t>(p[0]) |
+									static_cast<std::uint32_t>(p[1]) << 8 |
+									static_cast<std::uint32_t>(p[2]) << 16;
 
-							p += 4;
-							return value;
+								p += 4;
+
+								return value;
+							};
+
+							header h;
+							h.screen_size_x = read_uint32();
+							h.screen_size_y = read_uint32();
+							h.image_size_x = read_uint32();
+							h.image_size_y = read_uint32();
+							h.data_id = read_uint32();
+							h.data_index = read_uint32();
+							return h;
 						};
 
-						auto screen_size_x = read_uint32();
-						auto screen_size_y = read_uint32();
-						auto image_size_x = read_uint32();
-						auto image_size_y = read_uint32();
-						auto data_id = read_uint32();
-						auto data_index = read_uint32();
+						auto header = read_header(row_begin + row_offset + signature.size());
 
-						auto s2_end = row_begin + row_offset + screen_size_x * 4;
+						auto s2_end = row_begin + row_offset + header.screen_size_x * 4;
 
 						if (s2_end > row_end)
 						{
@@ -277,7 +310,7 @@ namespace vrcrec
 							continue;
 						}
 
-						auto y2 = y + screen_size_y - 1;
+						auto y2 = y + header.screen_size_y - 1;
 
 						if (y2 >= desc.Height)
 						{
@@ -292,7 +325,12 @@ namespace vrcrec
 							continue;
 						}
 
-						auto s4_end = s3_begin + screen_size_x * 4;
+						if (header != read_header(s3_begin + signature.size()))
+						{
+							continue;
+						}
+
+						auto s4_end = s3_begin + header.screen_size_x * 4;
 						auto s4_begin = s4_end - signature_rev.size();
 
 						if (!std::equal(s4_begin, s4_end, signature_rev.begin(), signature_rev.end()))
@@ -300,51 +338,53 @@ namespace vrcrec
 							continue;
 						}
 
-						if (image_size_x == 0 || image_size_y == 0 || screen_size_x == 0 || screen_size_y <= 2)
+						if (header.image_size_x == 0 || header.image_size_y == 0 || header.screen_size_x == 0 || header.screen_size_y <= 2)
 						{
 							continue;
 						}
 
-						auto image_size = image_size_x * image_size_y;
-						auto body_size = screen_size_x * (screen_size_y - 2);
+						auto image_size = header.image_size_x * header.image_size_y;
+						auto body_size = header.screen_size_x * (header.screen_size_y - 2);
 						auto num_chunks = (image_size - 1) / body_size + 1;
 
-						if (data_id != image_id ||
-							last_image_size_x != image_size_x ||
-							last_image_size_y != image_size_y ||
-							screen_size_x != last_screen_size_x ||
-							screen_size_y != last_screen_size_y)
+						if (header.data_id != image_id ||
+							last_image_size_x != header.image_size_x ||
+							last_image_size_y != header.image_size_y ||
+							header.screen_size_x != last_screen_size_x ||
+							header.screen_size_y != last_screen_size_y)
 						{
-							image_id = data_id;
-							image_data_rgb.resize(image_size_x * image_size_y * 4);
-							image_data_depth.resize(image_size_x * image_size_y * 4);
-							std::fill(image_data_rgb.begin(), image_data_rgb.end(), static_cast<std::uint8_t>(0));
-							std::fill(image_data_depth.begin(), image_data_depth.end(), static_cast<std::uint8_t>(0));
-							image_filled_rgb.resize(num_chunks);
-							image_filled_rgb.reset();
-							image_filled_depth.resize(num_chunks);
-							image_filled_depth.reset();
-							last_image_size_x = image_size_x;
-							last_image_size_y = image_size_y;
-							last_screen_size_x = screen_size_x;
-							last_screen_size_y = screen_size_y;
+							image_id = header.data_id;
+
+							for (auto& image_data : images_data)
+							{
+								image_data.resize(header.image_size_x * header.image_size_y * 4);
+								std::fill(image_data.begin(), image_data.end(), static_cast<std::uint8_t>(0));
+							}
+
+							for (auto& image_filled : images_filled)
+							{
+								image_filled.resize(num_chunks);
+								image_filled.reset();
+							}
+
+							last_image_size_x = header.image_size_x;
+							last_image_size_y = header.image_size_y;
+							last_screen_size_x = header.screen_size_x;
+							last_screen_size_y = header.screen_size_y;
 						}
 
-						auto data_index_mod = data_index % num_chunks;
-						auto depth = (data_index / num_chunks % 2) == 1;
+						auto data_index_mod = header.data_index % num_chunks;
+						auto channel = header.data_index / num_chunks % num_channels;
 
-						auto& image_filled = depth ? image_filled_depth : image_filled_rgb;
-						auto& image_data = depth ? image_data_depth : image_data_rgb;
+						auto& image_filled = images_filled[channel];
+						auto& image_data = images_data[channel];
 
 						if (image_filled.test_set(data_index_mod))
 						{
 							continue;
 						}
 
-						std::cout << "Found "
-							<< "RGB: " << image_filled_rgb.count() << "/" << image_filled_rgb.size() << ","
-							<< "DEPTH: " << image_filled_depth.count() << "/" << image_filled_depth.size()
-							<< std::endl;
+						std::cout << "receiving..." << std::endl;
 
 						auto dst_offset = data_index_mod * body_size * 4;
 
@@ -355,28 +395,24 @@ namespace vrcrec
 								break;
 							}
 
-							auto dst_size = std::min<std::size_t>(screen_size_x * 4, image_data.size() - dst_offset);
+							auto dst_size = std::min<std::size_t>(header.screen_size_x * 4, image_data.size() - dst_offset);
 							auto dst_begin = image_data.data() + dst_offset;
 
 							auto src_begin = data + row_offset + i * mapped.RowPitch;
 							std::copy_n(src_begin, dst_size, dst_begin);
 
-							dst_offset += screen_size_x * 4;
+							dst_offset += header.screen_size_x * 4;
 						}
 
-						if (image_filled_rgb.all() && image_filled_depth.all())
+						auto is_filled = [](auto& filled) { return filled.all(); };
+						auto filled_all = std::all_of(images_filled.begin(), images_filled.end(), is_filled);
+
+						if (filled_all)
 						{
 							auto write = [&](std::vector<std::uint8_t>& data, const std::string& filename)
 							{
 								auto pixels_begin = reinterpret_cast<boost::gil::bgra8_pixel_t*>(data.data());
-								auto pixels_end = pixels_begin + image_size_x * image_size_y;
-
-								for (auto p = pixels_begin; p != pixels_end; ++p)
-								{
-									(*p)[3] = 0xff;
-								}
-
-								auto v = boost::gil::interleaved_view(image_size_x, image_size_y, pixels_begin, image_size_x * 4);
+								auto v = boost::gil::interleaved_view(header.image_size_x, header.image_size_y, pixels_begin, header.image_size_x * 4);
 
 								auto temp_file = boost::filesystem::temp_directory_path() / boost::filesystem::unique_path();
 								boost::gil::write_view(temp_file.native(), v, boost::gil::png_tag());
@@ -388,17 +424,28 @@ namespace vrcrec
 
 							std::ostringstream os;
 							os << std::put_time(std::localtime(&now), "%Y_%m_%d_%H_%M_%S");
-							os << "_" << data_id;
+							os << "_" << header.data_id;
 
 							auto base_filename = os.str();
 							auto filename_rgb = base_filename + "_rgb.png";
 							auto filename_depth = base_filename + "_depth.png";
 
+							for (unsigned int i = 0; i < image_size; ++i)
+							{
+								images_data[0][i * 4 + 3] = 0xff;
+							}
+
+							for (unsigned int i = 0; i < image_size; ++i)
+							{
+								images_data[1][i * 4 + 0] = images_data[2][i * 4 + 2];
+								images_data[1][i * 4 + 3] = images_data[2][i * 4 + 1];
+							}
+
 							std::cout << "writing rgb..." << std::endl;
-							write(image_data_rgb, filename_rgb);
+							write(images_data[0], filename_rgb);
 
 							std::cout << "writing depth..." << std::endl;
-							write(image_data_depth, filename_depth);
+							write(images_data[1], filename_depth);
 
 							std::cout << "completed" << std::endl;
 						}
