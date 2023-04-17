@@ -457,6 +457,7 @@ namespace vrcrec
 
 			auto frame_arrived = frame_pool.FrameArrived(winrt::auto_revoke, on_frame_arrived);
 			auto capture_session = frame_pool.CreateCaptureSession(capture_item);
+			capture_session.IsCursorCaptureEnabled(false);
 			capture_session.StartCapture();
 
 			while (true)
