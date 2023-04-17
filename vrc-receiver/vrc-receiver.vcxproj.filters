@@ -9,4 +9,7 @@
   <ItemGroup>
     <Xml Include="manifest.xml" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="packages.config" />
+  </ItemGroup>
 </Project>

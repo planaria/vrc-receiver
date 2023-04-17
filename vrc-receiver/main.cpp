@@ -22,14 +22,14 @@
 
 #include <atlbase.h>
 #include <atlstr.h>
-#include <wtl/atlapp.h>
+#include <atlapp.h>
 
 #define _WTL_NO_CSTRING
-#include <wtl/atlmisc.h>
+#include <atlmisc.h>
 
 #include <atlwin.h>
-#include <wtl/atlframe.h>
-#include <wtl/atlcrack.h>
+#include <atlframe.h>
+#include <atlcrack.h>
 
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.System.h>
